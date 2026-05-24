@@ -999,8 +999,8 @@ def main():
     for a in all_assignments:
         desc = f"Course: {a['course_name']}\\nDue: {a['due_date']:%Y-%m-%d %H:%M}\\n{a['url']}"
         end_dt = a["due_date"]
-        start_dt = end_dt - timedelta(minutes=30)
-        if add_event(cal_name, f"[Assignment] {a['title']} (Due: {a['due_date']:%m/%d %H:%M})", start_dt, end_dt, desc):
+        start_dt = end_dt - timedelta(hours=1)
+        if add_event(cal_name, f"Due: {a['title']} ({a['due_date']:%H:%M})", start_dt, end_dt, desc):
             ok += 1
         else:
             fail += 1

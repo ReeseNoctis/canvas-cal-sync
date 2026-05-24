@@ -7,7 +7,7 @@ Sync assignments, recitation classes (RC), and office hours (OH) from [SJTU Canv
 - Uses the Canvas REST API (no browser, no scraping)
 - Fetches all active courses, assignments with due dates, and OH/RC info from syllabi and pages
 - Writes events to a dedicated **"SJTU Canvas"** calendar in Apple Calendar
-- Supports `launchd` for automatic background sync every 2 hours
+- Supports `launchd` for automatic background sync every 2 days
 
 ## Quick Start
 
@@ -96,7 +96,7 @@ launchctl list | grep canvassync
 tail -f data/sync.log
 ```
 
-The default interval is every 2 hours (7200 seconds). To change it, edit the `StartInterval` value in `com.sjtu.canvassync.plist` and reload.
+The default interval is every 2 days (7200 seconds). To change it, edit the `StartInterval` value in `com.sjtu.canvassync.plist` and reload.
 
 ## Event Format
 

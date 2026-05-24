@@ -124,6 +124,29 @@ def get_syllabus_text(course):
     return ""
 
 
+def get_announcements(course):
+    """Get recent announcements for a course"""
+    try:
+        items = api_get(f"/courses/{course['id']}/discussion_topics",
+                        {"only_announcements": "true"})
+    except Exception:
+        return []
+
+    announcements = []
+    for a in items[:10]:
+        title = a.get("title", "")
+        message = a.get("message", "")
+        if message:
+            message = re.sub(r"<[^>]+>", " ", message)
+        posted = a.get("posted_at", "")
+        announcements.append({
+            "title": title,
+            "text": f"{title}\n{message}",
+            "posted_at": posted,
+        })
+    return announcements
+
+
 def get_page_texts(course):
     """Get all page contents for a course (up to 20 pages)"""
     try:
@@ -434,6 +457,12 @@ def main():
         pages = get_page_texts(course)
         for p in pages:
             items = search_oh_rc(p["text"], config, course["name"])
+            all_oh_rc.extend(items)
+
+        # Location from announcements
+        announcements = get_announcements(course)
+        for ann in announcements:
+            items = search_oh_rc(ann["text"], config, course["name"])
             all_oh_rc.extend(items)
 
     print(f"\n[Result] {len(all_assignments)} assignments, {len(all_oh_rc)} OH/RC")

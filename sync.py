@@ -318,15 +318,16 @@ Return [] if no events found."""
         if action in ("add", "reschedule"):
             events.append(event_dict)
 
-    # Auto-cancel: specific-date events within 7 days may supersede recurring ones
-    # This handles cases like "RC shifted from Monday to Wednesday" where weekday changes
+    # Auto-cancel: a specific-date event on the same weekday supersedes a recurring one
+    # Only cancels when the specific event falls on the same day of week as the recurring pattern.
+    # Cross-weekday shifts (e.g. Monday→Wednesday) are handled by the LLM via explicit cancel events.
     specific_events = [e for e in events if e.get("is_absolute")]
     recurring_events = [e for e in events if not e.get("is_absolute")]
     for sp in specific_events:
         for rec in recurring_events:
             if (sp["course_name"] == rec["course_name"]
-                and sp["type"] == rec["type"]):
-                # Calculate days between specific event and next occurrence of recurring event
+                and sp["type"] == rec["type"]
+                and sp["day_of_week"] == rec["day_of_week"]):
                 days_diff = (sp["start"].date() - rec["start"].date()).days
                 if abs(days_diff) <= 7:
                     time_sp = sp["start"].hour * 60 + sp["start"].minute
@@ -877,7 +878,7 @@ def applescript_date(dt, with_time=False):
     return f"{wd}, {mo} {dt.day}, {dt.year}"
 
 
-def add_event(cal_name, summary, start_dt, end_dt, desc="", location=""):
+def add_event(cal_name, summary, start_dt, end_dt, desc="", location="", recurrence=""):
     s = clean_text(summary)
     d = clean_text(desc)
     loc = clean_text(location)
@@ -907,6 +908,8 @@ def add_event(cal_name, summary, start_dt, end_dt, desc="", location=""):
         props = f'summary:"{s}", start date:date "{start_str}", end date:date "{end_str}", description:"{d}"'
         if loc:
             props += f', location:"{loc}"'
+        if recurrence:
+            props += f', recurrence:"{recurrence}"'
         script = f'''
         tell application "Calendar"
             launch
@@ -997,12 +1000,18 @@ def main():
         desc = f"Course: {a['course_name']}\\nDue: {a['due_date']:%Y-%m-%d %H:%M}\\n{a['url']}"
         end_dt = a["due_date"]
         start_dt = end_dt - timedelta(minutes=30)
-        if add_event(cal_name, f"[Assignment] {a['title']}", start_dt, end_dt, desc):
+        if add_event(cal_name, f"[Assignment] {a['title']} (Due: {a['due_date']:%m/%d %H:%M})", start_dt, end_dt, desc):
             ok += 1
         else:
             fail += 1
 
     # OH/RC dedup and cancellation filter
+    # Build protected keys from current-batch events — cancels should not
+    # override events the LLM explicitly created in this same batch.
+    protected_keys = set()
+    for e in all_oh_rc:
+        protected_keys.add((e["course_name"], e["type"], e["day_of_week"], e["start"].hour))
+
     seen = set()
     for e in all_oh_rc:
         if e.get("is_absolute"):
@@ -1013,9 +1022,13 @@ def main():
         if key in seen:
             continue
 
-        # Check if this event should be cancelled (LLM-identified cancellation)
+        # Check if this event should be cancelled (LLM-identified cancellation).
+        # Skip cancel if the target matches an event the LLM created in this batch.
         is_cancelled = False
         for ca in cancel_list:
+            target_key = (ca["course_name"], ca["type"], ca["day_of_week"], ca["start_hour"])
+            if target_key in protected_keys:
+                continue  # LLM created this event in the current batch, don't cancel it
             if (ca["course_name"] == e["course_name"]
                 and ca["type"] == e["type"]
                 and ca["day_of_week"] == e["day_of_week"]):
@@ -1032,7 +1045,8 @@ def main():
         loc = e.get("location", "")
         if loc:
             desc += f"\\nLocation: {loc}"
-        if add_event(cal_name, e["title"], e["start"], e["end"], desc, location=loc):
+        rec = "" if e.get("is_absolute") else "FREQ=WEEKLY;INTERVAL=1"
+        if add_event(cal_name, e["title"], e["start"], e["end"], desc, location=loc, recurrence=rec):
             ok += 1
         else:
             fail += 1

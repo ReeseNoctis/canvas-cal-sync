@@ -1,4 +1,8 @@
 data/auth_state.json
 data/last_sync.json
+data/api_key_llm.txt
+data/api_token.txt
+data/ics_url.txt
 __pycache__/
 .env
+.DS_Store

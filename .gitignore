@@ -1,0 +1,4 @@
+data/auth_state.json
+data/last_sync.json
+__pycache__/
+.env

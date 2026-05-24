@@ -16,7 +16,7 @@
     <string>PROJECT_DIR</string>
 
     <key>StartInterval</key>
-    <integer>7200</integer>
+    <integer>172800</integer>
 
     <key>StandardOutPath</key>
     <string>PROJECT_DIR/data/sync.log</string>

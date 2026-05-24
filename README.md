@@ -113,4 +113,4 @@ Each sync clears and rebuilds the **"SJTU Canvas"** calendar, so no duplicate ev
 
 ## License
 
-MIT
+SJTU Global College

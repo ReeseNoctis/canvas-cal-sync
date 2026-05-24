@@ -68,7 +68,17 @@ These files contain your personal keys and are ignored by git (listed in `.gitig
 
 ---
 
-## Step 5: Install and run
+## Step 5: Create the iCloud calendar
+
+The script needs a calendar to write into. To sync events to your iPhone, create it under your **iCloud** account:
+
+1. Open **Calendar.app** on your Mac
+2. Click **File** → **New Calendar** → **iCloud** (if available; otherwise choose your iCloud account name)
+3. Name it **SJTU Canvas**
+
+> If you previously ran the script and have a local "SJTU Canvas" calendar, delete it first (right-click → Delete), then create the new one under iCloud.
+
+## Step 6: Install and run
 
 ```bash
 # Install dependencies
@@ -78,11 +88,13 @@ pip3 install --quiet requests openai
 python3 sync.py
 ```
 
-Open **Calendar.app** — you should see a new **"SJTU Canvas"** calendar populated with your assignments and RC/OH events.
+Open **Calendar.app** — your **"SJTU Canvas"** calendar should be populated. Since it's an iCloud calendar, the events will appear on your iPhone automatically.
+
+> If the calendar isn't found, the script will print exact instructions and exit.
 
 ---
 
-## Step 6: Set up automatic sync (optional)
+## Step 7: Set up automatic sync (optional)
 
 ```bash
 ./setup.sh

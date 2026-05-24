@@ -824,22 +824,38 @@ def clean_text(s):
 
 
 def ensure_calendar(name):
-    script = f'''
+    # First check if the calendar exists (searches across all accounts, including iCloud)
+    check_script = f'''
     tell application "Calendar"
         launch
         delay 1
         try
             set targetCal to first calendar whose name is "{name}"
+            return "found"
         on error
-            make new calendar with properties {{name:"{name}"}}
-            set targetCal to first calendar whose name is "{name}"
+            return "not_found"
         end try
+    end tell
+    '''
+    result = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=15)
+    if "not_found" in result.stdout:
+        print(f"[Cal] Calendar \"{name}\" not found.")
+        print(f"[Cal] Please create it manually in iCloud first:")
+        print(f"[Cal]   Open Calendar.app → File → New Calendar → iCloud → name it \"{name}\"")
+        print(f"[Cal]   Then re-run: python3 sync.py")
+        sys.exit(0)
+
+    clear_script = f'''
+    tell application "Calendar"
+        launch
+        delay 1
+        set targetCal to first calendar whose name is "{name}"
         tell targetCal
             delete every event
         end tell
     end tell
     '''
-    if run_applescript(script):
+    if run_applescript(clear_script):
         print(f"[Cal] Cleared calendar \"{name}\"")
 
 

@@ -4,6 +4,7 @@
   },
   "sync": {
     "calendar_name": "SJTU Canvas",
+    "calendar_account": "iCloud",
     "lookahead_days": 60
   },
   "course_filter": {

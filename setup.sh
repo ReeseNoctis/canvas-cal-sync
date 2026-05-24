@@ -1,5 +1,5 @@
 #!/bin/bash
-# Canvas Calendar Sync — 环境初始化
+# Canvas Calendar Sync — environment setup
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,21 +9,21 @@ PLIST_DST="$HOME/Library/LaunchAgents/com.sjtu.canvassync.plist"
 echo "=== Canvas Calendar Sync Setup ==="
 echo ""
 
-echo "[1/3] 检查 Python..."
+echo "[1/3] Checking Python..."
 python3 --version
 
-echo "[2/3] 安装依赖..."
+echo "[2/3] Installing dependencies..."
 pip3 install -r "$PROJECT_DIR/requirements.txt" --quiet
 
-echo "[3/3] 配置定时任务..."
+echo "[3/3] Configuring auto-sync job..."
 sed "s|PROJECT_DIR|$PROJECT_DIR|g" "$PLIST_SRC" > "$PLIST_DST"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 
 echo ""
-echo "=== 设置完成 ==="
+echo "=== Setup complete ==="
 echo ""
-echo "定时任务: 每 2 小时自动同步"
-echo "手动运行: cd $PROJECT_DIR && python3 sync.py"
-echo "查看日志: tail -f $PROJECT_DIR/data/sync.log"
-echo "停止定时: launchctl unload $PLIST_DST"
+echo "Auto-sync: runs every 2 days in background"
+echo "Manual run: cd $PROJECT_DIR && python3 sync.py"
+echo "View logs:  tail -f $PROJECT_DIR/data/sync.log"
+echo "Stop sync:  launchctl unload $PLIST_DST"

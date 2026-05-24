@@ -382,7 +382,7 @@ def api_get(path, params=None):
 
 
 # ==============================
-#  Canvas API data fetching
+# Canvas API data fetching
 # ==============================
 
 def get_courses():
@@ -489,7 +489,7 @@ def get_page_texts(course):
 
 
 # ==============================
-#  Time parsing
+# Time parsing (regex fallback)
 # ==============================
 
 def find_next_weekday(target_weekday, after=None):
@@ -503,7 +503,7 @@ def find_next_weekday(target_weekday, after=None):
 def parse_weekday_time(text):
     """Parse weekday + time patterns like 'Wednesday 14:00-16:00' or '周三 14:00'"""
     results = []
-    # Chinese: 星期三 14:00-16:00 / 每周三 10:00
+    # Chinese weekday patterns: 周三 14:00-16:00 / 每周三 10:00
     for m in re.finditer(
         r"(?:每\s*周\s*)?(?:星期|周)\s*([一二三四五六日天])\s*"
         r"(\d{1,2}):(\d{2})\s*[-~—至到]\s*(\d{1,2}):(\d{2})",
@@ -712,11 +712,11 @@ def parse_absolute_time(text):
 def extract_location(text):
     """Extract room/building location from text (supports SJTU naming conventions)"""
     patterns = [
-        # Full Chinese names
-        r"(东[上下中]院\s*\d+[-–]\d+)",        # 东中院1-200
-        r"([上下中]院\s*\d+[-–]\d+)",           # 上院1-100
-        r"(东[上下中]院\s*\d+)",                # 东中院201
-        r"([上下中]院\s*\d+)",                  # 上院105
+        # Full Chinese building names
+        r"(东[上下中]院\s*\d+[-–]\d+)",        # e.g. 东中院1-200
+        r"([上下中]院\s*\d+[-–]\d+)",           # e.g. 上院1-100
+        r"(东[上下中]院\s*\d+)",                # e.g. 东中院201
+        r"([上下中]院\s*\d+)",                  # e.g. 上院105
         # Chinese abbreviations: 东中1-200 / 东上2-301
         r"(东[中上下]\s*\d+[-–]\d+)",
         r"(东[中上下]\s*\d+)",
@@ -805,7 +805,7 @@ def search_oh_rc(text, config, course_name):
 
 
 # ==============================
-#  Apple Calendar integration
+# Apple Calendar integration
 # ==============================
 
 def run_applescript(script):
@@ -907,7 +907,7 @@ def add_event(cal_name, summary, start_dt, end_dt, desc="", location=""):
 
 
 # ==============================
-#  Main
+# Main
 # ==============================
 
 def main():

@@ -8,6 +8,7 @@ Automatically sync assignments, recitation classes (RC), office hours (OH), and 
 - **Intelligent RC/OH/Exam extraction**: Uses DeepSeek LLM to understand time, location, and schedule changes from announcements, syllabi, and pages
 - **Exam room assignment**: Detects student-ID-based room assignments from announcements (e.g., "odd IDs → Room A, even → Room B")
 - **Schedule change detection**: When an RC/OH is shifted (e.g., "moved from Monday to Wednesday"), automatically removes the old time and adds the new one
+- **Email notification**: Sends a summary email after each sync via Mail.app, listing every event added to the calendar
 - **Automatic background sync**: Runs every 2 days via launchd, no manual work needed
 - **SJTU location recognition**: Understands campus room naming (DZY, ZY103, 东中院, etc.)
 
@@ -16,7 +17,7 @@ Automatically sync assignments, recitation classes (RC), office hours (OH), and 
 You'll need two things. Setup takes about 5 minutes.
 
 - **Canvas API Token** (generated from the Canvas website)
-- **DeepSeek API Key** (from the DeepSeek website, used for intelligent RC/OH parsing)
+- **DeepSeek API Key** (from the DeepSeek website, used for intelligent RC/OH/Exam parsing)
 
 ---
 
@@ -32,7 +33,7 @@ You'll need two things. Setup takes about 5 minutes.
 
 ## Step 2: Get a DeepSeek API Key
 
-DeepSeek is a Chinese LLM provider that costs almost nothing. It reads your course announcements and understands human language like "RC shifted from Monday to Wednesday."
+DeepSeek is a Chinese LLM provider that costs almost nothing. It reads your course announcements, syllabi, and pages to understand human language like "RC shifted from Monday to Wednesday" or "Midterm exam, odd student IDs go to Room A."
 
 1. Go to [platform.deepseek.com](https://platform.deepseek.com)
 2. Sign up (phone number is fine)
@@ -163,21 +164,42 @@ Pre-filter keywords for exam detection in announcements, syllabi, and pages.
 ### Student ID (for exam room assignment)
 
 ```json
-"student_id": "523XXXXXXXXX"
+"student_id": ""
 ```
 
-Fill in your student ID number. When exam announcements specify rooms by student ID ranges (e.g., "odd IDs → Room A, even → Room B"), the LLM uses your ID to determine the correct room. Leave empty if not needed.
+Fill in your student ID number (e.g., `"524XXXXXXXXX"`). When exam announcements specify rooms by student ID ranges (e.g., "odd IDs → Room A, even → Room B"), the LLM uses your ID to determine the correct room. Leave empty if not needed.
 
-### Calendar name
+> Your student ID stays on your machine — it's not committed to git.
+
+### Sync settings
 
 ```json
 "sync": {
   "calendar_name": "SJTU Canvas",
-  "lookahead_days": 60
+  "calendar_account": "iCloud",
+  "lookahead_days": 60,
+  "email": "your_email@example.com"
 }
 ```
 
-Change `calendar_name` to use a different calendar.
+- `calendar_name` — the calendar to write events into (create it in Calendar.app first)
+- `calendar_account` — the account the calendar belongs to (e.g., `"iCloud"`, your Mac username)
+- `lookahead_days` — how many days ahead to look for new content
+- `email` — where to send the post-sync summary email. Leave empty (`""`) to disable
+
+### Email notification
+
+When `sync.email` is set, the script sends a summary email after every sync via Apple Mail.app. The email lists every event that was added to your calendar, including the type, title, date, time, recurrence, and location.
+
+The summary is also saved locally to `data/last_summary.txt` so you can review past results even if email is disabled.
+
+> **Mail.app must be signed in** to an email account for this to work. If you use another mail client, set up Mail.app with the same account just for sending — it only uses the SMTP side.
+
+### Time patterns (advanced)
+
+```json
+"time_patterns": []
+```
 
 ---
 
@@ -203,6 +225,17 @@ cd canvas-cal-sync
 python3 sync.py
 ```
 
+**Q: I'm not getting email notifications?**
+1. Make sure `sync.email` is set in `config.json` (Step 6 shows where)
+2. Open Mail.app — it must be signed in to an email account
+3. Try sending a test email from Mail.app to verify it works
+
+**Q: Where can I see what was synced?**
+Open `data/last_summary.txt` — it lists every event from the last sync with dates, times, and locations. If email is enabled, you also get this summary in your inbox.
+
+**Q: How do I find my calendar account name?**
+Open Calendar.app, right-click your "SJTU Canvas" calendar → **Get Info** → look at the **Account** field. Use that value for `sync.calendar_account`.
+
 **Q: It stopped working after a macOS update?**
 Re-run the setup: `./setup.sh` (this re-registers the launchd job).
 
@@ -215,15 +248,22 @@ Canvas API                        DeepSeek LLM                Apple Calendar
     │                                  │                          │
     ├─ Fetch course list               │                          │
     ├─ Fetch assignments               │                          │
-    ├─ Fetch announcements ──────────→ Extract RC/OH events:     │
-    ├─ Fetch syllabus       ──────────→   Time, location,        │
-    ├─ Fetch pages          ──────────→   Add/cancel/reschedule ─→ Write events
+    ├─ Fetch announcements ──────────→ Extract events:           │
+    ├─ Fetch syllabus       ──────────→   OH / RC / Exam         │
+    ├─ Fetch pages          ──────────→   Time, location,        │
+    │                                  │   Add/cancel/reschedule ─→ Write events
     │                                  │                          │
     │                           Semantic understanding:           │
     │                           "RC shifted from Mon to Wed"      │
     │                           → cancel Mon, add Wed             │
+    │                           "Midterm exam, odd IDs Room A"    │
+    │                           → resolve room by student ID      │
     │                           "8:20 PM" → 20:20                │
     │                           Filters noise: surveys, links     │
+    │                                                             │
+    │                                  └──────────────────→ Mail.app
+    │                                       Send summary email   │
+    │                                       (if email set)        │
 ```
 
 If the LLM call fails (network issue, quota, etc.), the script automatically falls back to regex-based extraction so sync never breaks.

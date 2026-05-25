@@ -1035,12 +1035,15 @@ def main():
     ensure_calendar(cal_name)
 
     ok = fail = 0
+    added = []  # track what gets written to calendar
     for a in all_assignments:
         desc = f"Course: {a['course_name']}\\nDue: {a['due_date']:%Y-%m-%d %H:%M}\\n{a['url']}"
         end_dt = a["due_date"]
         start_dt = end_dt - timedelta(hours=1)
-        if add_event(cal_name, f"Due: {a['title']} ({a['due_date']:%H:%M})", start_dt, end_dt, desc):
+        title = f"Due: {a['title']} ({a['due_date']:%H:%M})"
+        if add_event(cal_name, title, start_dt, end_dt, desc):
             ok += 1
+            added.append(f"Assignment | {title} | {a['due_date']:%Y-%m-%d %H:%M}")
         else:
             fail += 1
 
@@ -1087,8 +1090,21 @@ def main():
         rec = "" if e.get("is_absolute") else "FREQ=WEEKLY;INTERVAL=1"
         if add_event(cal_name, e["title"], e["start"], e["end"], desc, location=loc, recurrence=rec):
             ok += 1
+            recurring = " [weekly]" if rec else ""
+            loc_str = f" @ {loc}" if loc else ""
+            added.append(f"{e['type']:5s} | {e['title']} | {e['start']:%Y-%m-%d %a %H:%M}{recurring}{loc_str}")
         else:
             fail += 1
+
+    # Write summary file so user can review what was added
+    SUMMARY_PATH = DATA_DIR / "last_summary.txt"
+    with open(SUMMARY_PATH, "w") as f:
+        f.write(f"Canvas Sync — {datetime.now():%Y-%m-%d %H:%M}\n")
+        f.write(f"{'='*60}\n")
+        for line in added:
+            f.write(line + "\n")
+        f.write(f"{'='*60}\n")
+        f.write(f"Total: {ok} events\n")
 
     print(f"[Cal] {ok} succeeded" + (f", {fail} failed" if fail else ""))
 
@@ -1103,7 +1119,7 @@ def main():
 
     # Send notification
     summary = f"{len(all_assignments)} assignments, {len(all_events)} events synced"
-    msg = f"Calendar updated at {datetime.now():%H:%M}"
+    msg = f"See data/last_summary.txt for details"
     run_applescript(f'''
     display notification "{msg}" with title "Canvas Sync" subtitle "{summary}" sound name "Pop"
     ''')

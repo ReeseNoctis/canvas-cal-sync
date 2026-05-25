@@ -1,4 +1,5 @@
 data/last_sync.json
+data/last_summary.txt
 data/api_key_llm.txt
 data/api_token.txt
 __pycache__/

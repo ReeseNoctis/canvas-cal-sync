@@ -34,17 +34,18 @@ WEEKDAY_EN = {
 }
 
 # ---- Keyword matching ----
-_WORD_BOUNDARY_KW = {"RC", "OH"}
+_WORD_BOUNDARY_KW = {"RC", "OH", "Exam", "final"}
+_WORD_BOUNDARY_KW_LOWER = frozenset(kw.lower() for kw in _WORD_BOUNDARY_KW)
 
 
 def _keyword_match(keyword, line):
     """Check if keyword appears in line.
 
-    Uses word-boundary matching for bare short keywords (RC, OH)
-    to avoid false positives on substrings like "source" or "research".
+    Uses word-boundary matching for bare short keywords (RC, OH, Exam, final)
+    to avoid false positives on substrings like "source", "research", "example", "finally".
     Falls back to substring matching for longer/punctuated keywords.
     """
-    if keyword in _WORD_BOUNDARY_KW:
+    if keyword.lower() in _WORD_BOUNDARY_KW_LOWER:
         return bool(re.search(r'\b' + re.escape(keyword) + r'\b', line, re.IGNORECASE))
     return keyword.lower() in line.lower()
 
@@ -91,8 +92,16 @@ def call_deepseek(config, system_prompt, user_prompt):
                 raise
 
 
-def build_extraction_prompt(text_segments):
+def build_extraction_prompt(text_segments, student_id=""):
     """Build user prompt with all course text segments."""
+    header = ""
+    if student_id:
+        header = (
+            f"Student's ID number: {student_id}\n\n"
+            f"When exam locations specify student ID ranges (e.g., 'odd IDs go to Room A, "
+            f"even IDs to Room B', 'ID 001-050 in Room 1'), use the student's ID to "
+            f"determine the correct room and include it in the \"location\" field.\n\n"
+        )
     parts = []
     for seg in text_segments:
         text = seg["text"][:2000]  # truncate per segment
@@ -101,7 +110,7 @@ def build_extraction_prompt(text_segments):
             f"Source: {seg['source']}\n"
             f"Text: {text}\n"
         )
-    return "\n".join(parts)
+    return header + "\n".join(parts)
 
 
 def parse_llm_json(text):
@@ -136,8 +145,8 @@ def parse_llm_json(text):
         return []
 
 
-def extract_oh_rc_llm(config, courses):
-    """Extract OH/RC events from courses using LLM (DeepSeek).
+def extract_events_llm(config, courses):
+    """Extract OH/RC/Exam events from courses using LLM (DeepSeek).
 
     Returns (events_list, cancel_list) where:
       events_list: list of event dicts to add to calendar
@@ -145,8 +154,10 @@ def extract_oh_rc_llm(config, courses):
 
     Returns (None, None) on failure (caller should fall back to regex).
     """
-    # Collect text segments that contain OH/RC keywords (pre-filter)
-    all_kw = config.get("oh_keywords", []) + config.get("rc_keywords", [])
+    # Collect text segments that contain OH/RC/Exam keywords (pre-filter)
+    all_kw = (config.get("oh_keywords", [])
+              + config.get("rc_keywords", [])
+              + config.get("exam_keywords", []))
     text_segments = []
 
     for course in courses:
@@ -178,38 +189,41 @@ def extract_oh_rc_llm(config, courses):
             relevant.append(seg)
 
     if not relevant:
-        print("[LLM] No text segments with OH/RC keywords found")
+        print("[LLM] No text segments with OH/RC/Exam keywords found")
         return [], []
 
     print(f"[LLM] Sending {len(relevant)} text segments to DeepSeek...")
 
-    user_prompt = build_extraction_prompt(relevant)
+    student_id = config.get("student_id", "")
+    user_prompt = build_extraction_prompt(relevant, student_id)
 
-    system_prompt = """You are an event extraction system for a university course calendar. Extract scheduled OH (Office Hour) and RC (Recitation Class) events from course materials.
+    system_prompt = """You are an event extraction system for a university course calendar. Extract scheduled OH (Office Hour), RC (Recitation Class), and Exam events from course materials.
 
 Rules:
 1. Only extract events with specific dates AND times. SKIP surveys, polls, forms, group chat invites, recording links, and general non-schedule announcements.
-2. CANCEL events: When an event is explicitly cancelled, use action "cancel". Set day_of_week and start_time to the OLD schedule's values.
-3. RESCHEDULED events: When you see "shifted from X to Y", "moved to", or "rescheduled to", create:
+2. STUDENT ID ROOM ASSIGNMENT: The student's ID number is provided in the prompt below. When exam locations specify student ID ranges (e.g., "odd IDs go to Room A, even IDs to Room B", "ID 001-050 in Room 1, 051-100 in Room 2", "学号单号去A教室，双号去B教室"), use the student's ID to determine the correct room and include it in the "location" field. If no such ranges exist, use the location as stated.
+3. CANCEL events: When an event is explicitly cancelled, use action "cancel". Set day_of_week and start_time to the OLD schedule's values.
+4. RESCHEDULED events: When you see "shifted from X to Y", "moved to", or "rescheduled to", create:
    - An "add" event for the NEW time (with date, start_time, end_time filled).
    - A "cancel" event for the OLD time (with action="cancel", day_of_week=OLD weekday, start_time=OLD time).
    Example: "RC shifted from Monday to Wednesday May 27, 20:20" →
      add: {action:"add", date:"2026-05-27", day_of_week:2, start_time:"20:20", end_time:"21:50"}
      cancel: {action:"cancel", day_of_week:0, start_time:"20:20", end_time:"21:50"}
-4. Convert ALL times to 24h format. "8:20 PM" → "20:20". "4:00 PM" → "16:00".
-5. For recurring weekly events (e.g., "every Monday 20:20", "Mondays, 20:20"): set day_of_week (0=Mon, 6=Sun), leave date null.
-6. For one-time specific-date events (e.g., "May 27, 20:20"): include the full date as YYYY-MM-DD, set day_of_week to the correct weekday number.
-7. Today is """ + datetime.now().strftime("%Y-%m-%d") + """ (""" + datetime.now().strftime("%A") + """). Use this to resolve dates like "May 27" → 2026-05-27. Skip events more than 7 days in the past.
-8. Extract location/room if mentioned (e.g., ZY103, DZY4-201, lbl 326A, DSY215).
-9. If a course has BOTH a recurring weekly pattern AND announcements about specific date changes, the specific-date announcement overrides the recurring pattern for that date.
-10. ALWAYS provide both start_time and end_time as "HH:MM". If only a start time is mentioned (e.g., "Mondays, 20:20"), estimate the end time as 2 hours later ("22:20"). Never leave start_time or end_time as null.
-11. Return ONLY a JSON array. No markdown, no explanation text.
+5. Convert ALL times to 24h format. "8:20 PM" → "20:20". "4:00 PM" → "16:00".
+6. For recurring weekly events (e.g., "every Monday 20:20", "Mondays, 20:20"): set day_of_week (0=Mon, 6=Sun), leave date null. ONLY use this for OH/RC — never for Exam events.
+7. For one-time specific-date events (e.g., "May 27, 20:20"): include the full date as YYYY-MM-DD, set day_of_week to the correct weekday number.
+8. Today is """ + datetime.now().strftime("%Y-%m-%d") + """ (""" + datetime.now().strftime("%A") + """). Use this to resolve dates like "May 27" → 2026-05-27. Skip events more than 7 days in the past.
+9. Extract location/room if mentioned (e.g., ZY103, DZY4-201, lbl 326A, DSY215, 东中院1-200).
+10. If a course has BOTH a recurring weekly pattern AND announcements about specific date changes, the specific-date announcement overrides the recurring pattern for that date.
+11. Exam events: ALWAYS provide a specific date (never use day_of_week without date). Default duration is 2 hours if only the start time is given. Never create recurring Exam events.
+12. ALWAYS provide both start_time and end_time as "HH:MM". If only a start time is mentioned, estimate the end time as 2 hours later. Never leave start_time or end_time as null.
+13. Return ONLY a JSON array. No markdown, no explanation text.
 
 JSON schema:
 [
   {
     "course_name": "string",
-    "type": "OH" or "RC",
+    "type": "OH" or "RC" or "Exam",
     "action": "add" or "cancel" or "reschedule",
     "title": "short event title",
     "date": "YYYY-MM-DD" or null,
@@ -223,6 +237,15 @@ JSON schema:
     "cancel_day_of_week": 0-6 or null
   }
 ]
+
+Example Exam extraction:
+Input: "Final Exam: June 20, 14:00-16:00 in Room ZY103. Students with odd IDs go to DZY4-201."
+Student ID: 123456 (even) → uses DZY4-201
+Output: {"course_name": "ECE2160", "type": "Exam", "action": "add", "title": "Final Exam", "date": "2026-06-20", "start_time": "14:00", "end_time": "16:00", "day_of_week": 5, "location": "DZY4-201", "notes": "Exam room by student ID range"}
+
+Chinese example: "期末考试 6月20日 14:00-16:00 地点：东中院1-200"
+Output: {"course_name": "ECE2160", "type": "Exam", "action": "add", "title": "期末考试", "date": "2026-06-20", "start_time": "14:00", "end_time": "16:00", "day_of_week": 5, "location": "东中院1-200", "notes": ""}
+
 Return [] if no events found."""
 
     try:
@@ -293,6 +316,11 @@ Return [] if no events found."""
             "course_name": course_name,
             "location": location,
         }
+
+        # Exam events must be specific-date (never recurring)
+        if etype == "Exam" and not event_dict.get("is_absolute"):
+            print(f"  [LLM Skip] Exam without specific date: {title}")
+            continue
 
         if action in ("cancel", "reschedule"):
             # Build cancel target using the event's own fields
@@ -756,18 +784,28 @@ def extract_location(text):
     return ""
 
 
-def search_oh_rc(text, config, course_name):
-    """Search text for OH/RC keywords and parse associated times/locations"""
+def search_events_by_keywords(text, config, course_name):
+    """Search text for OH/RC/Exam keywords and parse associated times/locations"""
     found = []
     lines = text.split("\n")
-    all_kw = config["oh_keywords"] + config["rc_keywords"]
+    all_kw = (config.get("oh_keywords", [])
+              + config.get("rc_keywords", [])
+              + config.get("exam_keywords", []))
 
     for i, line in enumerate(lines):
         matched = next((kw for kw in all_kw if _keyword_match(kw, line)), None)
         if not matched:
             continue
-        is_oh = any(_keyword_match(kw, line) for kw in config["oh_keywords"])
-        etype = "OH" if is_oh else "RC"
+        is_oh = any(_keyword_match(kw, line) for kw in config.get("oh_keywords", []))
+        is_rc = any(_keyword_match(kw, line) for kw in config.get("rc_keywords", []))
+        is_exam = any(_keyword_match(kw, line) for kw in config.get("exam_keywords", []))
+        # Priority: Exam > OH > RC
+        if is_exam:
+            etype = "Exam"
+        elif is_oh:
+            etype = "OH"
+        else:
+            etype = "RC"
         # Wider context window to capture location info
         ctx_start = max(0, i - 3)
         ctx_end = min(len(lines), i + 4)
@@ -788,17 +826,18 @@ def search_oh_rc(text, config, course_name):
                 "location": location,
             })
 
-        # Recurring weekday patterns (e.g. "Wednesday 14:00-16:00")
-        for t in parse_weekday_time(context):
-            start_date = find_next_weekday(t["day_of_week"])
-            found.append({
-                "type": etype,
-                "title": f"[{etype}] {course_name}",
-                "start": start_date.replace(hour=t["start_h"], minute=t["start_m"], second=0),
-                "end": start_date.replace(hour=t["end_h"], minute=t["end_m"], second=0),
-                "day_of_week": t["day_of_week"],
-                "is_absolute": False,
-                "raw": line.strip(),
+        # Recurring weekday patterns (e.g. "Wednesday 14:00-16:00") — exams are never recurring
+        if etype != "Exam":
+            for t in parse_weekday_time(context):
+                start_date = find_next_weekday(t["day_of_week"])
+                found.append({
+                    "type": etype,
+                    "title": f"[{etype}] {course_name}",
+                    "start": start_date.replace(hour=t["start_h"], minute=t["start_m"], second=0),
+                    "end": start_date.replace(hour=t["end_h"], minute=t["end_m"], second=0),
+                    "day_of_week": t["day_of_week"],
+                    "is_absolute": False,
+                    "raw": line.strip(),
                 "course_name": course_name,
                 "location": location,
             })
@@ -954,7 +993,7 @@ def main():
         courses = filtered
 
     all_assignments = []
-    all_oh_rc = []
+    all_events = []
     cancel_list = []
 
     for course in courses:
@@ -962,11 +1001,11 @@ def main():
         all_assignments.extend(assignments)
         print(f"[API] {course['name']}: {len(assignments)} assignments")
 
-    # --- OH/RC extraction: LLM first, fall back to regex ---
+    # --- Event extraction (OH/RC/Exam): LLM first, fall back to regex ---
     try:
-        llm_events, cancels = extract_oh_rc_llm(config, courses)
+        llm_events, cancels = extract_events_llm(config, courses)
         if llm_events is not None:
-            all_oh_rc = llm_events
+            all_events = llm_events
             cancel_list = cancels
         else:
             raise Exception("LLM extraction failed")
@@ -976,20 +1015,20 @@ def main():
         for course in courses:
             syllabus = get_syllabus_text(course)
             if syllabus:
-                items = search_oh_rc(syllabus, config, course["name"])
-                all_oh_rc.extend(items)
+                items = search_events_by_keywords(syllabus, config, course["name"])
+                all_events.extend(items)
 
             pages = get_page_texts(course)
             for p in pages:
-                items = search_oh_rc(p["text"], config, course["name"])
-                all_oh_rc.extend(items)
+                items = search_events_by_keywords(p["text"], config, course["name"])
+                all_events.extend(items)
 
             announcements = get_announcements(course)
             for ann in announcements:
-                items = search_oh_rc(ann["text"], config, course["name"])
-                all_oh_rc.extend(items)
+                items = search_events_by_keywords(ann["text"], config, course["name"])
+                all_events.extend(items)
 
-    print(f"\n[Result] {len(all_assignments)} assignments, {len(all_oh_rc)} OH/RC"
+    print(f"\n[Result] {len(all_assignments)} assignments, {len(all_events)} events"
           + (f", {len(cancel_list)} to cancel" if cancel_list else ""))
 
     # 2. Write to Apple Calendar
@@ -1005,15 +1044,15 @@ def main():
         else:
             fail += 1
 
-    # OH/RC dedup and cancellation filter
+    # Event dedup and cancellation filter (OH/RC/Exam)
     # Build protected keys from current-batch events — cancels should not
     # override events the LLM explicitly created in this same batch.
     protected_keys = set()
-    for e in all_oh_rc:
+    for e in all_events:
         protected_keys.add((e["course_name"], e["type"], e["day_of_week"], e["start"].hour))
 
     seen = set()
-    for e in all_oh_rc:
+    for e in all_events:
         if e.get("is_absolute"):
             key = (e["course_name"], e["type"], "abs:" + e["start"].strftime("%Y-%m-%d %H"))
         else:
@@ -1058,7 +1097,7 @@ def main():
         json.dump({
             "last_sync": datetime.now().isoformat(),
             "assignments": len(all_assignments),
-            "oh_rc": len(all_oh_rc),
+            "events": len(all_events),
             "events_added": ok,
         }, f, indent=2)
 

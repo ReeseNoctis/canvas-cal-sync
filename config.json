@@ -31,5 +31,11 @@
     "习题课", "Recitation", "recitation",
     "RC:", "RC：", "习题", "RC"
   ],
+  "student_id": "",
+  "exam_keywords": [
+    "考试", "Exam", "exam", "midterm", "Midterm", "final", "Final",
+    "期中考试", "期末考试", "期中考", "期末考",
+    "考试安排", "考试地点", "考试时间"
+  ],
   "time_patterns": []
 }

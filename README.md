@@ -1,11 +1,12 @@
 # Canvas → Apple Calendar Sync
 
-Automatically sync assignments, recitation classes (RC), and office hours (OH) from [SJTU Canvas](https://oc.sjtu.edu.cn) to macOS Apple Calendar — with LLM-powered natural language understanding for both English and Chinese announcements.
+Automatically sync assignments, recitation classes (RC), office hours (OH), and exams from [SJTU Canvas](https://oc.sjtu.edu.cn) to macOS Apple Calendar — with LLM-powered natural language understanding for both English and Chinese announcements.
 
 ## Features
 
 - **Assignment sync**: Fetches all assignments with due dates and creates calendar events
-- **Intelligent RC/OH extraction**: Uses DeepSeek LLM to understand time, location, and schedule changes from announcements, syllabi, and pages
+- **Intelligent RC/OH/Exam extraction**: Uses DeepSeek LLM to understand time, location, and schedule changes from announcements, syllabi, and pages
+- **Exam room assignment**: Detects student-ID-based room assignments from announcements (e.g., "odd IDs → Room A, even → Room B")
 - **Schedule change detection**: When an RC/OH is shifted (e.g., "moved from Monday to Wednesday"), automatically removes the old time and adds the new one
 - **Automatic background sync**: Runs every 2 days via launchd, no manual work needed
 - **SJTU location recognition**: Understands campus room naming (DZY, ZY103, 东中院, etc.)
@@ -150,6 +151,22 @@ The default uses DeepSeek. To switch to another OpenAI-compatible provider, chan
 ```
 
 These keywords are used as a cheap pre-filter to find relevant text before sending it to the LLM. Add or remove keywords as needed.
+
+### Exam keywords
+
+```json
+"exam_keywords": ["考试", "Exam", "midterm", "Final", "期中考试", "期末考试"]
+```
+
+Pre-filter keywords for exam detection in announcements, syllabi, and pages.
+
+### Student ID (for exam room assignment)
+
+```json
+"student_id": "523XXXXXXXXX"
+```
+
+Fill in your student ID number. When exam announcements specify rooms by student ID ranges (e.g., "odd IDs → Room A, even → Room B"), the LLM uses your ID to determine the correct room. Leave empty if not needed.
 
 ### Calendar name
 

@@ -1117,11 +1117,22 @@ def main():
             "events_added": ok,
         }, f, indent=2)
 
-    # Show auto-dismissing dialog (more reliable than notification across CLI/launchd)
-    summary = f"{len(all_assignments)} assignments, {len(all_events)} events"
-    run_applescript(f'''
-    display dialog "Synced: {summary}\\nDetails: data/last_summary.txt" with title "Canvas Sync" giving up after 10
-    ''')
+    # Email summary if configured
+    email = config.get("sync", {}).get("email", "")
+    if email:
+        summary_path_abs = str(SUMMARY_PATH.resolve())
+        run_applescript(f'''
+        set summaryFile to POSIX file "{summary_path_abs}"
+        set bodyText to read summaryFile as «class utf8»
+        tell application "Mail"
+            set outMsg to make new outgoing message with properties {{subject:"Canvas Sync — {datetime.now():%Y-%m-%d %H:%M}", content:bodyText, visible:false}}
+            tell outMsg
+                make new to recipient at end of to recipients with properties {{address:"{email}"}}
+            end tell
+            send outMsg
+        end tell
+        ''')
+        print(f"[Mail] Summary sent to {email}")
     print("[Done] Sync complete")
 
 

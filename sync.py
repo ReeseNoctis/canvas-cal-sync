@@ -1101,6 +1101,12 @@ def main():
             "events_added": ok,
         }, f, indent=2)
 
+    # Send notification
+    summary = f"{len(all_assignments)} assignments, {len(all_events)} events synced"
+    msg = f"Calendar updated at {datetime.now():%H:%M}"
+    run_applescript(f'''
+    display notification "{msg}" with title "Canvas Sync" subtitle "{summary}" sound name "Pop"
+    ''')
     print("[Done] Sync complete")
 
 

@@ -1117,11 +1117,10 @@ def main():
             "events_added": ok,
         }, f, indent=2)
 
-    # Send notification
-    summary = f"{len(all_assignments)} assignments, {len(all_events)} events synced"
-    msg = f"See data/last_summary.txt for details"
+    # Show auto-dismissing dialog (more reliable than notification across CLI/launchd)
+    summary = f"{len(all_assignments)} assignments, {len(all_events)} events"
     run_applescript(f'''
-    display notification "{msg}" with title "Canvas Sync" subtitle "{summary}" sound name "Pop"
+    display dialog "Synced: {summary}\\nDetails: data/last_summary.txt" with title "Canvas Sync" giving up after 10
     ''')
     print("[Done] Sync complete")
 

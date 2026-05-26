@@ -524,7 +524,7 @@ def get_page_texts(course):
 def find_next_weekday(target_weekday, after=None):
     after = after or datetime.now()
     days_ahead = target_weekday - after.weekday()
-    if days_ahead <= 0:
+    if days_ahead < 0:
         days_ahead += 7
     return after + timedelta(days=days_ahead)
 

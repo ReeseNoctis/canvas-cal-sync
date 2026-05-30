@@ -7,13 +7,19 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/env</string>
-        <string>python3</string>
-        <string>PROJECT_DIR/sync.py</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd PROJECT_DIR &amp;&amp; /usr/bin/python3 -u sync.py</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
 
     <key>StartInterval</key>
     <integer>172800</integer>

@@ -48,8 +48,8 @@ DeepSeek is a Chinese LLM provider that costs almost nothing. It reads your cour
 Open **Terminal** on your Mac (find it in Launchpad or search "Terminal"), then copy and paste:
 
 ```bash
-git clone https://github.com/ReeseNoctis/canvas-cal-sync.git
-cd canvas-cal-sync
+git clone https://github.com/ReeseNoctis/canvas-cal-sync.git ~/canvas-cal-sync
+cd ~/canvas-cal-sync
 ```
 
 ---
@@ -221,7 +221,7 @@ About 0.002 RMB per sync (yes, that's 0.2 cents). At once every 2 days, that's r
 
 **Q: Can I run it manually?**
 ```bash
-cd canvas-cal-sync
+cd ~/canvas-cal-sync
 python3 sync.py
 ```
 
@@ -235,6 +235,9 @@ Open `data/last_summary.txt` — it lists every event from the last sync with da
 
 **Q: How do I find my calendar account name?**
 Open Calendar.app, right-click your "SJTU Canvas" calendar → **Get Info** → look at the **Account** field. Use that value for `sync.calendar_account`.
+
+**Q: Auto-sync not working? (Operation not permitted)**
+macOS blocks background processes from accessing the Desktop, Documents, and Downloads folders. Make sure the project is cloned to your home directory (`~/canvas-cal-sync`), not inside Documents.
 
 **Q: It stopped working after a macOS update?**
 Re-run the setup: `./setup.sh` (this re-registers the launchd job).

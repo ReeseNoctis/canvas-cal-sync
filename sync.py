@@ -863,14 +863,19 @@ def clean_text(s):
     return s.replace('\\', '\\\\').replace('"', '\\"')[:200]
 
 
-def ensure_calendar(name):
-    # First check if the calendar exists (searches across all accounts, including iCloud)
+def ensure_calendar(name, account=""):
+    # First check if the calendar exists
+    if account:
+        cal_path = f'calendar "{name}" of account "{account}"'
+    else:
+        cal_path = f'calendar "{name}"'
+
     check_script = f'''
     tell application "Calendar"
         launch
         delay 1
         try
-            set targetCal to first calendar whose name is "{name}"
+            set targetCal to {cal_path}
             return "found"
         on error
             return "not_found"
@@ -879,9 +884,11 @@ def ensure_calendar(name):
     '''
     result = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=15)
     if "not_found" in result.stdout:
-        print(f"[Cal] Calendar \"{name}\" not found.")
-        print(f"[Cal] Please create it manually in iCloud first:")
-        print(f"[Cal]   Open Calendar.app → File → New Calendar → iCloud → name it \"{name}\"")
+        print(f"[Cal] Calendar \"{name}\" not found")
+        if account:
+            print(f"[Cal] Account: {account}")
+        print(f"[Cal] Please create it manually in Calendar.app first:")
+        print(f"[Cal]   Open Calendar.app → File → New Calendar → choose account → name it \"{name}\"")
         print(f"[Cal]   Then re-run: python3 sync.py")
         sys.exit(0)
 
@@ -889,9 +896,13 @@ def ensure_calendar(name):
     tell application "Calendar"
         launch
         delay 1
-        set targetCal to first calendar whose name is "{name}"
-        tell targetCal
-            delete every event
+        tell {cal_path}
+            set evList to every event
+            repeat with ev in evList
+                try
+                    delete ev
+                end try
+            end repeat
         end tell
     end tell
     '''
@@ -917,10 +928,15 @@ def applescript_date(dt, with_time=False):
     return f"{wd}, {mo} {dt.day}, {dt.year}"
 
 
-def add_event(cal_name, summary, start_dt, end_dt, desc="", location="", recurrence=""):
+def add_event(cal_name, cal_account, summary, start_dt, end_dt, desc="", location="", recurrence=""):
     s = clean_text(summary)
     d = clean_text(desc)
     loc = clean_text(location)
+
+    if cal_account:
+        cal_path = f'calendar "{cal_name}" of account "{cal_account}"'
+    else:
+        cal_path = f'calendar "{cal_name}"'
 
     is_allday = (start_dt.hour == 0 and start_dt.minute == 0 and
                  end_dt.hour == 0 and end_dt.minute == 0)
@@ -933,10 +949,7 @@ def add_event(cal_name, summary, start_dt, end_dt, desc="", location="", recurre
         script = f'''
         tell application "Calendar"
             launch
-            try
-                set targetCal to first calendar whose name is "{cal_name}"
-            end try
-            tell targetCal
+            tell {cal_path}
                 make new event with properties {{{props}}}
             end tell
         end tell
@@ -952,10 +965,7 @@ def add_event(cal_name, summary, start_dt, end_dt, desc="", location="", recurre
         script = f'''
         tell application "Calendar"
             launch
-            try
-                set targetCal to first calendar whose name is "{cal_name}"
-            end try
-            tell targetCal
+            tell {cal_path}
                 make new event with properties {{{props}}}
             end tell
         end tell
@@ -975,6 +985,7 @@ def main():
 
     config = load_config()
     cal_name = config["sync"]["calendar_name"]
+    cal_account = config["sync"].get("calendar_account", "")
 
     # 1. Fetch data from Canvas
     courses = get_courses()
@@ -1032,7 +1043,7 @@ def main():
           + (f", {len(cancel_list)} to cancel" if cancel_list else ""))
 
     # 2. Write to Apple Calendar
-    ensure_calendar(cal_name)
+    ensure_calendar(cal_name, cal_account)
 
     ok = fail = 0
     added = []  # track what gets written to calendar
@@ -1041,7 +1052,7 @@ def main():
         end_dt = a["due_date"]
         start_dt = end_dt - timedelta(hours=1)
         title = f"Due: {a['title']} ({a['due_date']:%H:%M})"
-        if add_event(cal_name, title, start_dt, end_dt, desc):
+        if add_event(cal_name, cal_account, title, start_dt, end_dt, desc):
             ok += 1
             added.append(f"Assignment | {title} | {a['due_date']:%Y-%m-%d %H:%M}")
         else:
@@ -1088,7 +1099,7 @@ def main():
         if loc:
             desc += f"\\nLocation: {loc}"
         rec = "" if e.get("is_absolute") else "FREQ=WEEKLY;INTERVAL=1"
-        if add_event(cal_name, e["title"], e["start"], e["end"], desc, location=loc, recurrence=rec):
+        if add_event(cal_name, cal_account, e["title"], e["start"], e["end"], desc, location=loc, recurrence=rec):
             ok += 1
             recurring = " [weekly]" if rec else ""
             loc_str = f" @ {loc}" if loc else ""

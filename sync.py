@@ -856,6 +856,39 @@ def run_applescript(script):
     return True
 
 
+def activate_calendar():
+    """Ensure Calendar.app is running and responsive before any AppleScript calls.
+
+    Uses AppleScript 'activate' to bring Calendar to the foreground — this is more
+    reliable than open(1) from a launchd background context. Polls until Calendar
+    responds to a simple command.
+    """
+    import time
+
+    # First, try to launch Calendar via AppleScript activate (foreground launch
+    # ensures the app fully initializes its AppleEvent handler).
+    subprocess.run(
+        ["osascript", "-e", 'tell application "Calendar" to activate'],
+        capture_output=True, text=True, timeout=30,
+    )
+    # Give Calendar a moment to finish launching after activate
+    time.sleep(3)
+
+    # Poll until Calendar is responsive (up to 60 seconds)
+    for i in range(60):
+        r = subprocess.run(
+            ["osascript", "-e", 'tell application "Calendar" to get name of calendars'],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            print(f"[Cal] Calendar.app ready (waited {i + 3}s)")
+            return True
+        time.sleep(1)
+
+    print("[Cal] WARNING: Calendar.app did not become responsive after 60s")
+    return False
+
+
 def clean_text(s):
     if not s:
         return ""
@@ -1043,6 +1076,7 @@ def main():
           + (f", {len(cancel_list)} to cancel" if cancel_list else ""))
 
     # 2. Write to Apple Calendar
+    activate_calendar()
     ensure_calendar(cal_name, cal_account)
 
     ok = fail = 0

@@ -4,9 +4,9 @@
   },
   "sync": {
     "calendar_name": "SJTU Canvas",
-    "calendar_account": "iCloud",
+    "calendar_account": "",
     "lookahead_days": 60,
-    "email": ""
+    "email": "lizishan@sjtu.edu.cn"
   },
   "course_filter": {
     "mode": "include",
@@ -32,7 +32,7 @@
     "习题课", "Recitation", "recitation",
     "RC:", "RC：", "习题", "RC"
   ],
-  "student_id": "",
+  "student_id": "524370910258",
   "exam_keywords": [
     "考试", "Exam", "exam", "midterm", "Midterm", "final", "Final",
     "期中考试", "期末考试", "期中考", "期末考",

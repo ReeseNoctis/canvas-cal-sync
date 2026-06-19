@@ -848,45 +848,31 @@ def search_events_by_keywords(text, config, course_name):
 # Apple Calendar integration
 # ==============================
 
-def run_applescript(script):
-    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=30)
+def run_applescript(script, timeout=60):
+    """Run an AppleScript snippet with a generous timeout.
+
+    Returns (success: bool, stdout: str, stderr: str)."""
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
+                       timeout=timeout)
     if r.returncode != 0:
         print(f"  [Cal Error] {r.stderr.strip()[:120]}")
-        return False
-    return True
+        return False, r.stdout, r.stderr
+    return True, r.stdout, r.stderr
 
 
-def activate_calendar():
-    """Ensure Calendar.app is running and responsive before any AppleScript calls.
+def _calendar_ensure_running():
+    """One-shot attempt to bring Calendar.app to the foreground so AppleEvents work.
 
-    Uses AppleScript 'activate' to bring Calendar to the foreground — this is more
-    reliable than open(1) from a launchd background context. Polls until Calendar
-    responds to a simple command.
+    Uses osascript 'activate' (more reliable from launchd than open -g).
+    On failure, subsequent AppleScript calls will still try 'launch' as fallback.
     """
     import time
-
-    # First, try to launch Calendar via AppleScript activate (foreground launch
-    # ensures the app fully initializes its AppleEvent handler).
     subprocess.run(
         ["osascript", "-e", 'tell application "Calendar" to activate'],
         capture_output=True, text=True, timeout=30,
     )
-    # Give Calendar a moment to finish launching after activate
-    time.sleep(3)
-
-    # Poll until Calendar is responsive (up to 60 seconds)
-    for i in range(60):
-        r = subprocess.run(
-            ["osascript", "-e", 'tell application "Calendar" to get name of calendars'],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            print(f"[Cal] Calendar.app ready (waited {i + 3}s)")
-            return True
-        time.sleep(1)
-
-    print("[Cal] WARNING: Calendar.app did not become responsive after 60s")
-    return False
+    # Brief pause after activate to let Calendar finish launching
+    time.sleep(2)
 
 
 def clean_text(s):
@@ -896,12 +882,16 @@ def clean_text(s):
     return s.replace('\\', '\\\\').replace('"', '\\"')[:200]
 
 
-def ensure_calendar(name, account=""):
-    # First check if the calendar exists
+def calendar_ensure_exists(cal_name, account=""):
+    """Verify the target calendar exists. Exit gracefully if not (user must create
+    it manually in Calendar.app first).
+
+    Does NOT clear the calendar — we use smart diff-based sync instead.
+    """
     if account:
-        cal_path = f'calendar "{name}" of account "{account}"'
+        cal_path = f'calendar "{cal_name}" of account "{account}"'
     else:
-        cal_path = f'calendar "{name}"'
+        cal_path = f'calendar "{cal_name}"'
 
     check_script = f'''
     tell application "Calendar"
@@ -915,32 +905,125 @@ def ensure_calendar(name, account=""):
         end try
     end tell
     '''
-    result = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=15)
-    if "not_found" in result.stdout:
-        print(f"[Cal] Calendar \"{name}\" not found")
+    ok, stdout, _ = run_applescript(check_script, timeout=30)
+    if not ok or "not_found" in stdout:
+        print(f"[Cal] Calendar \"{cal_name}\" not found")
         if account:
             print(f"[Cal] Account: {account}")
         print(f"[Cal] Please create it manually in Calendar.app first:")
-        print(f"[Cal]   Open Calendar.app → File → New Calendar → choose account → name it \"{name}\"")
+        print(f"[Cal]   Open Calendar.app → File → New Calendar → choose account → name it \"{cal_name}\"")
         print(f"[Cal]   Then re-run: python3 sync.py")
         sys.exit(0)
+    print(f"[Cal] Calendar \"{cal_name}\" found")
 
-    clear_script = f'''
+
+def get_calendar_events(cal_name, account=""):
+    """Read ALL events currently in the target calendar via AppleScript.
+
+    Returns a list of dicts, each with enough fields to compute a fingerprint:
+      {title, start, end, has_recurrence, day_of_week, start_hour, start_minute}
+
+    Returns an empty list on failure (non-fatal — we'll just add everything).
+    """
+    if account:
+        cal_path = f'calendar "{cal_name}" of account "{account}"'
+    else:
+        cal_path = f'calendar "{cal_name}"'
+
+    # Read summary, start date, end date, and recurrence for every event.
+    # We build ISO-like date strings manually to avoid «class isot» chevron
+    # characters which break when passed through Python subprocess to osascript.
+    read_script = f'''
     tell application "Calendar"
         launch
-        delay 1
-        tell {cal_path}
-            set evList to every event
-            repeat with ev in evList
-                try
-                    delete ev
-                end try
-            end repeat
-        end tell
+        try
+            set out to ""
+            tell {cal_path}
+                set evList to every event
+                repeat with ev in evList
+                    try
+                        set evTitle to summary of ev
+                        set evStart to start date of ev
+                        set evEnd to end date of ev
+                        set evRecurrence to recurrence of ev
+                        -- Build ISO-like: YYYY-MM-DDTHH:MM:SS (no chevrons)
+                        set startISO to (year of evStart as integer as string) & "-" & my pad2(month of evStart as integer) & "-" & my pad2(day of evStart) & "T" & my pad2(hours of evStart) & ":" & my pad2(minutes of evStart) & ":00"
+                        set endISO to (year of evEnd as integer as string) & "-" & my pad2(month of evEnd as integer) & "-" & my pad2(day of evEnd) & "T" & my pad2(hours of evEnd) & ":" & my pad2(minutes of evEnd) & ":00"
+                        set out to out & evTitle & "|||" & startISO & "|||" & endISO & "|||" & evRecurrence & return
+                    end try
+                end repeat
+            end tell
+            return out
+        on error errMsg
+            return "ERROR: " & errMsg
+        end try
     end tell
+    on pad2(n)
+        if n < 10 then
+            return "0" & n
+        end if
+        return n as string
+    end pad2
     '''
-    if run_applescript(clear_script):
-        print(f"[Cal] Cleared calendar \"{name}\"")
+    ok, stdout, _ = run_applescript(read_script, timeout=120)
+    if not ok or stdout.startswith("ERROR:"):
+        print(f"[Cal] WARNING: Could not read existing events (non-fatal): {stdout[:200]}")
+        return []
+
+    events = []
+    for line in stdout.strip().split("\n"):
+        if not line or "|||" not in line:
+            continue
+        parts = line.split("|||")
+        if len(parts) < 4:
+            continue
+        title = parts[0].strip()
+        start_str = parts[1].strip()
+        end_str = parts[2].strip()
+        recurrence_str = parts[3].strip() if len(parts) > 3 else ""
+
+        has_recurrence = bool(recurrence_str and recurrence_str != "missing value")
+
+        # Parse ISO date formats from AppleScript: "2026-06-19T16:00:00" or "2026-06-19T16:00:00+0800"
+        try:
+            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+
+        # Ignore timezone offset for local comparison
+        if start_dt.tzinfo is not None:
+            start_dt = start_dt.replace(tzinfo=None)
+        if end_dt.tzinfo is not None:
+            end_dt = end_dt.replace(tzinfo=None)
+
+        events.append({
+            "title": title,
+            "start": start_dt,
+            "end": end_dt,
+            "has_recurrence": has_recurrence,
+            "day_of_week": start_dt.weekday(),
+            "start_hour": start_dt.hour,
+            "start_minute": start_dt.minute,
+        })
+
+    print(f"[Cal] Read {len(events)} existing events from \"{cal_name}\"")
+    return events
+
+
+def event_fingerprint(e):
+    """Generate a unique string key for matching/merging calendar events.
+
+    For recurring events:  "{title}|weekly|{dow}|{hour}:{minute}"
+    For one-time events:   "{title}|{start:%Y-%m-%d %H:%M}|{end:%Y-%m-%d %H:%M}"
+    """
+    if e.get("has_recurrence") or not e.get("is_absolute", True):
+        dow = e.get("day_of_week", 0)
+        sh = e.get("start_hour", e["start"].hour)
+        sm = e.get("start_minute", e["start"].minute)
+        return f"{e['title']}|weekly|{dow}|{sh:02d}:{sm:02d}"
+    else:
+        return f"{e['title']}|{e['start']:%Y-%m-%d %H:%M}|{e['end']:%Y-%m-%d %H:%M}"
 
 
 WDAY = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -961,7 +1044,9 @@ def applescript_date(dt, with_time=False):
     return f"{wd}, {mo} {dt.day}, {dt.year}"
 
 
-def add_event(cal_name, cal_account, summary, start_dt, end_dt, desc="", location="", recurrence=""):
+def calendar_add_event(cal_name, cal_account, summary, start_dt, end_dt,
+                       desc="", location="", recurrence=""):
+    """Add a single event via AppleScript. Returns True on success."""
     s = clean_text(summary)
     d = clean_text(desc)
     loc = clean_text(location)
@@ -1004,7 +1089,46 @@ def add_event(cal_name, cal_account, summary, start_dt, end_dt, desc="", locatio
         end tell
         '''
 
-    return run_applescript(script)
+    ok, _, _ = run_applescript(script, timeout=60)
+    return ok
+
+
+def calendar_remove_event(cal_name, cal_account, title, start_dt, has_recurrence=False):
+    """Remove a single matching event from the calendar via AppleScript.
+
+    Matches by title AND full start datetime (not just date). For recurring
+    events this targets the specific first-occurrence.
+
+    NOTE: AppleScript CANNOT delete recurring events from Calendar.app
+    (macOS limitation — deletion of recurring events is silently ignored).
+    For recurring events, set has_recurrence=True to skip the removal attempt.
+    """
+    if has_recurrence:
+        return False  # RFC: recurring events can't be deleted via AppleScript
+
+    s = clean_text(title)
+    date_s = applescript_date(start_dt, with_time=True)
+
+    if cal_account:
+        cal_path = f'calendar "{cal_name}" of account "{cal_account}"'
+    else:
+        cal_path = f'calendar "{cal_name}"'
+
+    script = f'''
+    tell application "Calendar"
+        launch
+        tell {cal_path}
+            set evList to (every event whose summary is "{s}" and start date = date "{date_s}")
+            repeat with ev in evList
+                try
+                    delete ev
+                end try
+            end repeat
+        end tell
+    end tell
+    '''
+    ok, _, _ = run_applescript(script, timeout=60)
+    return ok
 
 
 # ==============================
@@ -1075,47 +1199,64 @@ def main():
     print(f"\n[Result] {len(all_assignments)} assignments, {len(all_events)} events"
           + (f", {len(cancel_list)} to cancel" if cancel_list else ""))
 
-    # 2. Write to Apple Calendar
-    activate_calendar()
-    ensure_calendar(cal_name, cal_account)
+    # 2. Sync to Apple Calendar (smart diff — no destructive clear-all)
+    _calendar_ensure_running()
+    calendar_ensure_exists(cal_name, cal_account)
 
-    ok = fail = 0
-    added = []  # track what gets written to calendar
+    # Read what's currently in the calendar so we can avoid duplicates
+    existing_events = get_calendar_events(cal_name, cal_account)
+    existing_fps = set()
+    for ev in existing_events:
+        existing_fps.add(event_fingerprint(ev))
+
+    # Build desired event list with fingerprints (assignments + OH/RC/Exam)
+    desired = []  # list of (fingerprint, event_dict, add_kwargs)
+    desired_fps = set()
+
+    # -- Assignments --
     for a in all_assignments:
-        desc = f"Course: {a['course_name']}\\nDue: {a['due_date']:%Y-%m-%d %H:%M}\\n{a['url']}"
         end_dt = a["due_date"]
         start_dt = end_dt - timedelta(hours=1)
         title = f"Due: {a['title']} ({a['due_date']:%H:%M})"
-        if add_event(cal_name, cal_account, title, start_dt, end_dt, desc):
-            ok += 1
-            added.append(f"Assignment | {title} | {a['due_date']:%Y-%m-%d %H:%M}")
-        else:
-            fail += 1
+        desc = f"Course: {a['course_name']}\\nDue: {a['due_date']:%Y-%m-%d %H:%M}\\n{a['url']}"
+        ev = {
+            "title": title,
+            "start": start_dt,
+            "end": end_dt,
+            "is_absolute": True,
+            "has_recurrence": False,
+            "day_of_week": start_dt.weekday(),
+            "start_hour": start_dt.hour,
+            "start_minute": start_dt.minute,
+        }
+        fp = event_fingerprint(ev)
+        if fp not in desired_fps:
+            desired_fps.add(fp)
+            desired.append((fp, ev, {
+                "summary": title, "start_dt": start_dt, "end_dt": end_dt,
+                "desc": desc, "location": "", "recurrence": "",
+            }))
 
-    # Event dedup and cancellation filter (OH/RC/Exam)
-    # Build protected keys from current-batch events — cancels should not
-    # override events the LLM explicitly created in this same batch.
+    # -- OH/RC/Exam events (with dedup + cancellation filter) --
     protected_keys = set()
     for e in all_events:
         protected_keys.add((e["course_name"], e["type"], e["day_of_week"], e["start"].hour))
 
-    seen = set()
+    seen_event_keys = set()
     for e in all_events:
         if e.get("is_absolute"):
             key = (e["course_name"], e["type"], "abs:" + e["start"].strftime("%Y-%m-%d %H"))
         else:
             key = (e["course_name"], e["type"], e["day_of_week"], e["start"].hour)
-
-        if key in seen:
+        if key in seen_event_keys:
             continue
 
-        # Check if this event should be cancelled (LLM-identified cancellation).
-        # Skip cancel if the target matches an event the LLM created in this batch.
+        # Cancel check
         is_cancelled = False
         for ca in cancel_list:
             target_key = (ca["course_name"], ca["type"], ca["day_of_week"], ca["start_hour"])
             if target_key in protected_keys:
-                continue  # LLM created this event in the current batch, don't cancel it
+                continue
             if (ca["course_name"] == e["course_name"]
                 and ca["type"] == e["type"]
                 and ca["day_of_week"] == e["day_of_week"]):
@@ -1123,23 +1264,91 @@ def main():
                     is_cancelled = True
                     print(f"  [Cancel] Skipping {e['title']} (weekday={e['day_of_week']}, hour={e['start'].hour})")
                     break
-
         if is_cancelled:
             continue
 
-        seen.add(key)
+        seen_event_keys.add(key)
         desc = f"Source: {e['raw']}"
         loc = e.get("location", "")
         if loc:
             desc += f"\\nLocation: {loc}"
         rec = "" if e.get("is_absolute") else "FREQ=WEEKLY;INTERVAL=1"
-        if add_event(cal_name, cal_account, e["title"], e["start"], e["end"], desc, location=loc, recurrence=rec):
+
+        ev = {
+            "title": e["title"],
+            "start": e["start"],
+            "end": e["end"],
+            "is_absolute": e.get("is_absolute", False),
+            "has_recurrence": bool(rec),
+            "day_of_week": e["day_of_week"],
+            "start_hour": e["start"].hour,
+            "start_minute": e["start"].minute,
+        }
+        fp = event_fingerprint(ev)
+        if fp not in desired_fps:
+            desired_fps.add(fp)
+            desired.append((fp, ev, {
+                "summary": e["title"], "start_dt": e["start"], "end_dt": e["end"],
+                "desc": desc, "location": loc, "recurrence": rec,
+            }))
+
+    print(f"[Sync] Desired: {len(desired)} events, Existing in Calendar: {len(existing_fps)} events")
+
+    # --- Diff and apply ---
+    # 1. Add events in desired but not in existing
+    ok = fail = 0
+    added = []
+    new_fps = set()
+
+    for fp, ev, kwargs in desired:
+        if fp in existing_fps:
+            # Already in calendar — skip (no duplicate)
+            continue
+        if fp in new_fps:
+            continue  # already added this batch
+        if calendar_add_event(cal_name, cal_account, **kwargs):
             ok += 1
-            recurring = " [weekly]" if rec else ""
-            loc_str = f" @ {loc}" if loc else ""
-            added.append(f"{e['type']:5s} | {e['title']} | {e['start']:%Y-%m-%d %a %H:%M}{recurring}{loc_str}")
+            new_fps.add(fp)
+            added.append(f"{ev.get('type', 'Assignment'):5s} | {ev['title']} | {ev['start']:%Y-%m-%d %a %H:%M}")
         else:
             fail += 1
+
+    # 2. Remove stale events AND deduplicate (keep only one copy per fingerprint).
+    # Track (title, start_dt) pairs already targeted for removal — since
+    # calendar_remove_event deletes ALL events matching that pair, we only need
+    # to call it once per unique pair.
+    removed = 0
+    removed_dup = 0
+    removed_pairs = set()  # (title, start_dt_str) already removed
+    kept_fps = set()
+
+    for ev in existing_events:
+        fp = event_fingerprint(ev)
+        pair_key = (ev["title"], ev["start"].strftime("%Y-%m-%d %H:%M"))
+
+        if pair_key in removed_pairs:
+            continue  # already removed by a previous call
+
+        if fp not in desired_fps:
+            # Stale: no longer in the desired set
+            if calendar_remove_event(cal_name, cal_account, ev["title"], ev["start"],
+                                     has_recurrence=ev.get("has_recurrence", False)):
+                removed += 1
+                removed_pairs.add(pair_key)
+                print(f"  [Remove stale] {ev['title']} ({ev['start']:%Y-%m-%d %H:%M})")
+        elif fp in kept_fps:
+            # Duplicate: fingerprint is desired but we already kept one copy
+            if calendar_remove_event(cal_name, cal_account, ev["title"], ev["start"],
+                                     has_recurrence=ev.get("has_recurrence", False)):
+                removed_dup += 1
+                removed_pairs.add(pair_key)
+                print(f"  [Remove dup] {ev['title']} ({ev['start']:%Y-%m-%d %H:%M})")
+        else:
+            # First occurrence of this fingerprint — keep it
+            kept_fps.add(fp)
+
+    if removed or removed_dup:
+        print(f"[Sync] Removed {removed} stale + {removed_dup} duplicate events")
 
     # Write summary file so user can review what was added
     SUMMARY_PATH = DATA_DIR / "last_summary.txt"
@@ -1148,25 +1357,33 @@ def main():
         f.write(f"{'='*60}\n")
         for line in added:
             f.write(line + "\n")
+        if removed or removed_dup:
+            f.write(f"{'='*60}\n")
+            f.write(f"Removed {removed} stale + {removed_dup} duplicate events\n")
         f.write(f"{'='*60}\n")
-        f.write(f"Total: {ok} events\n")
+        f.write(f"Added: {ok}, Failed: {fail}, Removed: {removed} stale + {removed_dup} dup\n")
 
-    print(f"[Cal] {ok} succeeded" + (f", {fail} failed" if fail else ""))
+    total_removed = removed + removed_dup
+    print(f"[Cal] {ok} added" + (f", {fail} failed" if fail else "") +
+          (f", {total_removed} removed" if total_removed else ""))
 
-    # Save sync record
+    # Save sync record with fingerprints for future runs
     with open(LAST_SYNC_PATH, "w") as f:
         json.dump({
             "last_sync": datetime.now().isoformat(),
             "assignments": len(all_assignments),
-            "events": len(all_events),
+            "events_desired": len(desired),
             "events_added": ok,
+            "events_removed": removed,
+            "events_duplicates_removed": removed_dup,
+            "events_failed": fail,
         }, f, indent=2)
 
     # Email summary if configured
     email = config.get("sync", {}).get("email", "")
     if email:
         summary_path_abs = str(SUMMARY_PATH.resolve())
-        run_applescript(f'''
+        _, _, _ = run_applescript(f'''
         set summaryFile to POSIX file "{summary_path_abs}"
         set bodyText to read summaryFile as «class utf8»
         tell application "Mail"

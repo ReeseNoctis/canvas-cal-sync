@@ -218,6 +218,8 @@ Rules:
 11. Exam events: ALWAYS provide a specific date (never use day_of_week without date). Default duration is 2 hours if only the start time is given. Never create recurring Exam events.
 12. ALWAYS provide both start_time and end_time as "HH:MM". If only a start time is mentioned, estimate the end time as 2 hours later. Never leave start_time or end_time as null.
 13. Return ONLY a JSON array. No markdown, no explanation text.
+14. OH DEDUPLICATION: When a course lists multiple OH descriptions that refer to the SAME weekly time slot (e.g., "Instructor OH: Tue 14:00" and "Prof. X Office Hour: Tue 14:00" are the same OH), create ONLY ONE event. Use the most specific title available (prefer the instructor's actual name over generic labels like "Instructor OH").
+15. ENDED COURSES: If a course's materials clearly indicate the course has concluded (e.g., final exam already taken, "course is over", "thanks for a great semester"), extract NO events for that course — return an empty array for it.
 
 JSON schema:
 [
@@ -329,6 +331,7 @@ Return [] if no events found."""
                 "type": etype,
                 "day_of_week": day_of_week,
                 "start_hour": start_h if day_of_week is not None else start.hour,
+                "start_minute": start_m if day_of_week is not None else start.minute,
             }
             # Also try cancel_* fields for more precision
             cancel_dow = e.get("cancel_day_of_week")
@@ -366,6 +369,7 @@ Return [] if no events found."""
                             "type": rec["type"],
                             "day_of_week": rec["day_of_week"],
                             "start_hour": rec["start"].hour,
+                            "start_minute": rec["start"].minute,
                         })
                         print(f"  [Auto-Cancel] {rec['course_name']} {rec['type']} recurring day={rec['day_of_week']} {rec['start']:%H:%M} (superseded by {sp['start']:%Y-%m-%d %H:%M})")
 
@@ -414,22 +418,59 @@ def api_get(path, params=None):
 # Canvas API data fetching
 # ==============================
 
+def _parse_canvas_date(date_str):
+    """Parse a Canvas ISO-8601 date string, returning a naive datetime or None."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except (ValueError, AttributeError):
+        return None
+
+
 def get_courses():
-    """Get active courses for the current term"""
+    """Get active courses for the current term.
+
+    Automatically skips courses whose end date has already passed.
+    Falls back to the term's end date when the course doesn't have one.
+    """
     courses = api_get("/courses", {"enrollment_state": "active",
                                     "include[]": ["term"]})
     results = []
+    skipped_ended = []
+    now = datetime.now()
+
     for c in courses:
         name = c.get("name", "")
         if not name or "Template" in name:
             continue
+
+        # Check if the course has ended — course-level first, then term-level
+        ended = False
+        end_at = _parse_canvas_date(c.get("end_at"))
+        if not end_at:
+            # Fall back to term end date
+            term = c.get("term", {})
+            end_at = _parse_canvas_date(term.get("end_at")) if isinstance(term, dict) else None
+
+        if end_at and now > end_at:
+            skipped_ended.append((name, end_at))
+            continue
+
         results.append({
             "id": c["id"],
             "name": name,
             "course_code": c.get("course_code", ""),
         })
 
-    print(f"[API] Found {len(results)} courses")
+    print(f"[API] Found {len(results)} active courses")
+    if skipped_ended:
+        print(f"[API] Skipped {len(skipped_ended)} ended course(s):")
+        for name, end_at in skipped_ended:
+            print(f"  - {name} (ended {end_at:%Y-%m-%d})")
     for c in results:
         print(f"  - {c['name']} (id={c['id']})")
     return results
@@ -1011,19 +1052,47 @@ def get_calendar_events(cal_name, account=""):
     return events
 
 
+def _canonical_title(title):
+    """Extract a canonical title by stripping instructor/descriptive suffixes.
+
+    "[OH] MATH2030JSU2026 - Runze Cai OH"  →  "[OH] MATH2030JSU2026"
+    "[RC] ECE4010JSU2026 - Recitation"     →  "[RC] ECE4010JSU2026"
+
+    For assignment-style titles ("Due: ...") the title is returned unchanged.
+    """
+    # Match pattern: [{type}] {course_name} - {description}
+    m = re.match(r'^\[([^\]]+)\]\s+(.+?)\s*-\s*.+$', title)
+    if m:
+        etype = m.group(1)
+        course = m.group(2).strip()
+        return f"[{etype}] {course}"
+    return title
+
+
 def event_fingerprint(e):
     """Generate a unique string key for matching/merging calendar events.
 
-    For recurring events:  "{title}|weekly|{dow}|{hour}:{minute}"
-    For one-time events:   "{title}|{start:%Y-%m-%d %H:%M}|{end:%Y-%m-%d %H:%M}"
+    Uses a canonicalised title so that the same OH/RC/Exam slot described
+    with different wording (e.g. "Runze Cai OH" vs "Instructor OH") shares
+    a single fingerprint and is never duplicated.
+
+    For recurring events:  "{canonical_title}|weekly|{dow}|{hour}:{minute_quantized}"
+        Time is quantized to 15-minute buckets so that small parse variations
+        (e.g. 14:00 vs 14:10 for the same event) still produce the same key.
+    For one-time events:   "{canonical_title}|{start:%Y-%m-%d %H:%M}|{end:%Y-%m-%d %H:%M}"
     """
+    title = e.get("title", "")
+    canonical = _canonical_title(title)
+
     if e.get("has_recurrence") or not e.get("is_absolute", True):
         dow = e.get("day_of_week", 0)
         sh = e.get("start_hour", e["start"].hour)
         sm = e.get("start_minute", e["start"].minute)
-        return f"{e['title']}|weekly|{dow}|{sh:02d}:{sm:02d}"
+        # Quantize to 15-minute buckets to absorb minor LLM parse variance
+        sm_quant = (sm // 15) * 15
+        return f"{canonical}|weekly|{dow}|{sh:02d}:{sm_quant:02d}"
     else:
-        return f"{e['title']}|{e['start']:%Y-%m-%d %H:%M}|{e['end']:%Y-%m-%d %H:%M}"
+        return f"{canonical}|{e['start']:%Y-%m-%d %H:%M}|{e['end']:%Y-%m-%d %H:%M}"
 
 
 WDAY = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -1199,6 +1268,71 @@ def main():
     print(f"\n[Result] {len(all_assignments)} assignments, {len(all_events)} events"
           + (f", {len(cancel_list)} to cancel" if cancel_list else ""))
 
+    # --- Post-LLM: skip events for courses whose final exam has passed ---
+    # Group events by course and check if any course has a past final exam
+    now = datetime.now()
+    courses_with_past_final = set()
+    for e in all_events:
+        if e.get("type") == "Exam" and e.get("is_absolute"):
+            title_lower = e.get("title", "").lower()
+            if any(kw in title_lower for kw in ("final", "期末")):
+                if e["start"] < now:
+                    courses_with_past_final.add(e["course_name"])
+
+    if courses_with_past_final:
+        before = len(all_events)
+        all_events = [e for e in all_events if e["course_name"] not in courses_with_past_final]
+        # Also drop cancellations for those courses
+        cancel_list = [c for c in cancel_list if c["course_name"] not in courses_with_past_final]
+        print(f"[Post-LLM] Skipped {before - len(all_events)} events from ended course(s):")
+        for cn in sorted(courses_with_past_final):
+            print(f"  - {cn} (final exam already taken)")
+
+    # --- Post-LLM: remove events that are already in the past ---
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    before_past = len(all_events)
+    all_events = [e for e in all_events if e["start"] >= today_start]
+    skipped_past = before_past - len(all_events)
+    if skipped_past:
+        print(f"[Filter] Skipped {skipped_past} past events (already occurred)")
+
+    # --- Post-LLM: merge near-duplicate OH/RC events for the same course ---
+    # Two sessions at the same course+type+weekday within 30 min are the same event.
+    before_merge = len(all_events)
+    merged_events = []
+    consumed = [False] * len(all_events)
+    for i, e1 in enumerate(all_events):
+        if consumed[i]:
+            continue
+        best = e1
+        best_title_len = len(e1.get("title", ""))
+        for j in range(i + 1, len(all_events)):
+            e2 = all_events[j]
+            if consumed[j]:
+                continue
+            if (e1["course_name"] == e2["course_name"]
+                and e1["type"] == e2["type"]
+                and e1.get("is_absolute") == e2.get("is_absolute")):
+                # Same day check
+                same_day = (e1["day_of_week"] == e2["day_of_week"] if not e1.get("is_absolute")
+                           else e1["start"].date() == e2["start"].date())
+                if not same_day:
+                    continue
+                # Time within 30 minutes
+                t1 = e1["start"].hour * 60 + e1["start"].minute
+                t2 = e2["start"].hour * 60 + e2["start"].minute
+                if abs(t1 - t2) <= 30:
+                    consumed[j] = True
+                    # Keep the more descriptive title (longer = more specific)
+                    t2_len = len(e2.get("title", ""))
+                    if t2_len > best_title_len:
+                        best = e2
+                        best_title_len = t2_len
+        merged_events.append(best)
+    all_events = merged_events
+    if before_merge > len(all_events):
+        print(f"[Merge] Merged {before_merge - len(all_events)} near-duplicate events (same course+type+day within 30 min)")
+
     # 2. Sync to Apple Calendar (smart diff — no destructive clear-all)
     _calendar_ensure_running()
     calendar_ensure_exists(cal_name, cal_account)
@@ -1240,14 +1374,14 @@ def main():
     # -- OH/RC/Exam events (with dedup + cancellation filter) --
     protected_keys = set()
     for e in all_events:
-        protected_keys.add((e["course_name"], e["type"], e["day_of_week"], e["start"].hour))
+        protected_keys.add((e["course_name"], e["type"], e["day_of_week"], e["start"].hour, e["start"].minute))
 
     seen_event_keys = set()
     for e in all_events:
         if e.get("is_absolute"):
-            key = (e["course_name"], e["type"], "abs:" + e["start"].strftime("%Y-%m-%d %H"))
+            key = (e["course_name"], e["type"], "abs:" + e["start"].strftime("%Y-%m-%d %H:%M"))
         else:
-            key = (e["course_name"], e["type"], e["day_of_week"], e["start"].hour)
+            key = (e["course_name"], e["type"], e["day_of_week"], e["start"].hour, e["start"].minute)
         if key in seen_event_keys:
             continue
 
@@ -1260,7 +1394,8 @@ def main():
             if (ca["course_name"] == e["course_name"]
                 and ca["type"] == e["type"]
                 and ca["day_of_week"] == e["day_of_week"]):
-                if ca["start_hour"] is None or ca["start_hour"] == e["start"].hour:
+                ca_minute = ca.get("start_minute", 0)
+                if ca["start_hour"] is None or (ca["start_hour"] == e["start"].hour and ca_minute == e["start"].minute):
                     is_cancelled = True
                     print(f"  [Cancel] Skipping {e['title']} (weekday={e['day_of_week']}, hour={e['start'].hour})")
                     break
